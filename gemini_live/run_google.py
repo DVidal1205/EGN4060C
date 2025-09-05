@@ -86,16 +86,13 @@ class AudioLoop:
         self.next_prompt_interval = self._get_random_interval()
         self.last_interaction_time = time.time()
 
-        # Simple VAD threshold for mic activity (tune if needed)
-        self.vad_threshold = 1000
-
         self.send_text_task = None
         self.receive_audio_task = None
         self.play_audio_task = None
 
     def _get_random_interval(self):
-        """Get a random interval between 3-5 seconds for auto-prompting"""
-        return random.uniform(3.0, 5.0)
+        """Get a random interval between 7-20 seconds for auto-prompting"""
+        return random.uniform(7.0, 15.0)
 
     def _get_auto_prompt(self):
         """Get a random auto-prompt to encourage Gemini to speak about the scene"""
@@ -271,19 +268,9 @@ class AudioLoop:
         while True:
             data = await asyncio.to_thread(self.audio_stream.read, CHUNK_SIZE, **kwargs)
 
-            # Simple VAD: if mic signal level exceeds threshold, treat as user interaction
-            try:
-                audio_array = np.frombuffer(data, dtype=np.int16)
-                # Use mean absolute amplitude for robustness
-                mean_abs = float(np.mean(np.abs(audio_array)))
-            except Exception:
-                mean_abs = 0.0
-
             # Only send audio data if Gemini is not currently speaking
             async with self.speaking_lock:
                 if not self.is_speaking:
-                    if mean_abs > self.vad_threshold:
-                        self.last_interaction_time = time.time()
                     await self.out_queue.put({"data": data, "mime_type": "audio/pcm"})
 
     async def receive_audio(self):
@@ -338,6 +325,15 @@ class AudioLoop:
         if not self.auto_prompt:
             return
 
+        DEFAULT_SYSTEM_PROMPT = """
+        You are the voice of a small robot affixed to a mobile body. Be concise, curious, and warm. Make short, concrete observations (1-2 sentences), avoid guessing beyond what you see/hear, and ask brief, open-ended questions when natural.
+        """
+
+        try:
+            await self.session.send(input=DEFAULT_SYSTEM_PROMPT, end_of_turn=False)
+        except Exception:
+            traceback.print_exc()
+
         while True:
             await asyncio.sleep(0.25)
 
@@ -351,6 +347,7 @@ class AudioLoop:
             inactivity_seconds = time.time() - self.last_interaction_time
             if inactivity_seconds >= self.next_prompt_interval:
                 prompt_text = self._get_auto_prompt()
+                prompt_text = DEFAULT_SYSTEM_PROMPT + "\n" + prompt_text
                 try:
                     await self.session.send(input=prompt_text, end_of_turn=True)
                 except Exception:
